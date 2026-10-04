@@ -42,6 +42,7 @@ namespace CustomRPC
         TextBox textBoxButton2Text;
         TextBox textBoxButton2Url;
         CheckBox checkBoxProcessTrigger;
+        CheckBox checkBoxIdleTrigger;
         CheckBox checkBoxFallback;
         NumericUpDown numericUpDownPriority;
         TextBox textBoxProcessName;
@@ -50,6 +51,7 @@ namespace CustomRPC
         Button buttonAddProcess;
         Button buttonRemoveProcess;
         Button buttonRemove;
+        Button buttonDuplicate;
         Button buttonMoveUp;
         Button buttonMoveDown;
         Button buttonApply;
@@ -189,10 +191,12 @@ namespace CustomRPC
             listBoxStatuses.SelectedIndexChanged += StatusSelectionChanged;
 
             Button buttonAdd = CreateButton("Add Preset");
+            buttonDuplicate = CreateButton("Duplicate Preset");
             buttonRemove = CreateButton("Remove");
             buttonMoveUp = CreateButton("Move Up");
             buttonMoveDown = CreateButton("Move Down");
             buttonAdd.Click += AddStatus;
+            buttonDuplicate.Click += DuplicateStatus;
             buttonRemove.Click += RemoveStatus;
             buttonMoveUp.Click += MoveStatusUp;
             buttonMoveDown.Click += MoveStatusDown;
@@ -206,6 +210,7 @@ namespace CustomRPC
                 Padding = new Padding(0, 6, 0, 0)
             };
             statusButtons.Controls.Add(buttonAdd);
+            statusButtons.Controls.Add(buttonDuplicate);
             statusButtons.Controls.Add(buttonRemove);
             statusButtons.Controls.Add(buttonMoveUp);
             statusButtons.Controls.Add(buttonMoveDown);
@@ -291,13 +296,14 @@ namespace CustomRPC
             FlowLayoutPanel leftButtons = new FlowLayoutPanel
             {
                 Dock = DockStyle.Left,
-                Width = 120,
+                Width = 205,
                 WrapContents = false,
                 FlowDirection = FlowDirection.LeftToRight,
                 Padding = new Padding(0, 6, 0, 0)
             };
 
             leftButtons.Controls.Add(buttonAddProcess);
+            leftButtons.Controls.Add(buttonRemoveProcess);
 
             FlowLayoutPanel actionButtons = new FlowLayoutPanel
             {
@@ -461,6 +467,13 @@ namespace CustomRPC
             };
             checkBoxProcessTrigger.CheckedChanged += (s, e) => UpdateTriggerControls();
 
+            checkBoxIdleTrigger = new CheckBox
+            {
+                Text = "Use this preset when I am idle",
+                AutoSize = true,
+                Margin = new Padding(0, 4, 0, 10)
+            };
+
             checkBoxFallback = new CheckBox
             {
                 Text = "Use as fallback when no process matches",
@@ -540,19 +553,23 @@ namespace CustomRPC
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 5,
+                RowCount = 6,
                 Padding = new Padding(12)
             };
+
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+
             table.Controls.Add(checkBoxProcessTrigger, 0, 0);
-            table.Controls.Add(priorityPanel, 0, 1);
-            table.Controls.Add(processInput, 0, 2);
-            table.Controls.Add(listBoxProcesses, 0, 3);
-            table.Controls.Add(processHint, 0, 4);
+            table.Controls.Add(checkBoxIdleTrigger, 0, 1);
+            table.Controls.Add(priorityPanel, 0, 2);
+            table.Controls.Add(processInput, 0, 3);
+            table.Controls.Add(listBoxProcesses, 0, 4);
+            table.Controls.Add(processHint, 0, 5);
 
             return WrapTab("Process Trigger", table);
         }
@@ -815,6 +832,7 @@ namespace CustomRPC
             textBoxButton2Url.Text = status.Button2URL ?? "";
 
             checkBoxProcessTrigger.Checked = status.ProcessTriggerEnabled;
+            checkBoxIdleTrigger.Checked = status.IdleTriggerEnabled;
             checkBoxFallback.Checked = status.Fallback;
             numericUpDownPriority.Value = Math.Min(numericUpDownPriority.Maximum, Math.Max(numericUpDownPriority.Minimum, status.Priority <= 0 ? 100 : status.Priority));
             listBoxProcesses.Items.Clear();
@@ -864,6 +882,7 @@ namespace CustomRPC
             status.Button2URL = textBoxButton2Url.Text ?? "";
 
             status.ProcessTriggerEnabled = checkBoxProcessTrigger.Checked;
+            status.IdleTriggerEnabled = checkBoxIdleTrigger.Checked;
             status.Fallback = checkBoxFallback.Checked;
             status.Priority = (int)numericUpDownPriority.Value;
             status.Processes = listBoxProcesses.Items.Cast<string>()
@@ -901,11 +920,28 @@ namespace CustomRPC
 
             DynamicStatus newStatus = new DynamicStatus
             {
+                IdleTriggerEnabled = false,
                 Priority = statuses.Count + 1
             };
 
             statuses.Add(newStatus);
             selectedIndex = statuses.Count - 1;
+            RefreshStatusList();
+        }
+
+        void DuplicateStatus(object sender, EventArgs e)
+        {
+            SaveCurrentEditor();
+
+            int index = listBoxStatuses.SelectedIndex;
+            if (index < 0 || index >= statuses.Count)
+                return;
+
+            DynamicStatus duplicate = CloneStatus(statuses[index]);
+            int insertIndex = index + 1;
+
+            statuses.Insert(insertIndex, duplicate);
+            selectedIndex = insertIndex;
             RefreshStatusList();
         }
 
@@ -972,6 +1008,7 @@ namespace CustomRPC
         void UpdateButtons()
         {
             int index = listBoxStatuses.SelectedIndex;
+            buttonDuplicate.Enabled = index >= 0 && index < statuses.Count;
             buttonRemove.Enabled = statuses.Count > 1 || index >= 0;
             buttonMoveUp.Enabled = index > 0;
             buttonMoveDown.Enabled = index >= 0 && index < statuses.Count - 1;
@@ -1062,6 +1099,7 @@ namespace CustomRPC
                 Button2Text = status.Button2Text ?? "",
                 Button2URL = status.Button2URL ?? "",
                 ProcessTriggerEnabled = status.ProcessTriggerEnabled,
+                IdleTriggerEnabled = status.IdleTriggerEnabled,
                 Fallback = status.Fallback,
                 Priority = status.Priority <= 0 ? 100 : status.Priority,
                 Processes = status.Processes == null ? new List<string>() : new List<string>(status.Processes)

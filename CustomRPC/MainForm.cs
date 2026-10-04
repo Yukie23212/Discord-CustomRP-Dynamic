@@ -1,4 +1,4 @@
-﻿using CommonMark;
+using CommonMark;
 using DiscordRPC;
 using DiscordRPC.Helper;
 using Microsoft.AppCenter.Analytics;
@@ -21,6 +21,7 @@ using Button = System.Windows.Forms.Button;
 using Label = System.Windows.Forms.Label;
 using DButton = DiscordRPC.Button;
 using Timer = System.Timers.Timer;
+using System.Runtime.InteropServices;
 
 namespace CustomRPC
 {
@@ -176,12 +177,17 @@ namespace CustomRPC
         List<DynamicStatus> dynamicStatuses = new List<DynamicStatus>();
 
         /// <summary>
-        /// Current index in the dynamic status list.
+        /// Current index being displayed, including temporary overrides.
         /// </summary>
         int dynamicStatusIndex = 0;
 
         /// <summary>
-        /// Last randomly selected status index. Used to prevent an immediate repeat.
+        /// Current index of the global Sequential/Random rotation. Overrides do not change it.
+        /// </summary>
+        int dynamicBaseStatusIndex = 0;
+
+        /// <summary>
+        /// Last randomly selected base status index. Used to prevent an immediate repeat.
         /// </summary>
         int dynamicLastRandomIndex = -1;
 
@@ -568,6 +574,38 @@ namespace CustomRPC
                 buttonConnect.FlatStyle = buttonDisconnect.FlatStyle = buttonUpdatePresence.FlatStyle = FlatStyle.Standard;
             }
         }
+
+
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LASTINPUTINFO
+        {
+            public uint cbSize;
+            public uint dwTime;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+        private const double DynamicIdleThresholdSeconds = 600.0;
+
+        private static bool IsUserIdle()
+        {
+            LASTINPUTINFO info = new LASTINPUTINFO
+            {
+                cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO))
+            };
+
+            if (!GetLastInputInfo(ref info))
+                return false;
+
+            uint idleMilliseconds =
+                unchecked((uint)Environment.TickCount) - info.dwTime;
+
+            return idleMilliseconds / 1000.0 >= DynamicIdleThresholdSeconds;
+        }
+
+
         /// <summary>
         /// Will be called 10 seconds after a failed connection to try and reconnect.
         /// </summary>
@@ -767,6 +805,7 @@ namespace CustomRPC
                    status.Timestamps == 0 &&
                    !status.CustomTimestampEndEnabled &&
                    !status.ProcessTriggerEnabled &&
+                   !status.IdleTriggerEnabled &&
                    !status.Fallback &&
                    (status.Processes == null || status.Processes.Count == 0);
         }
@@ -837,112 +876,72 @@ namespace CustomRPC
         /// </summary>
         private void ResetDynamicStatusSelection()
         {
+            dynamicStatusIndex = 0;
+            dynamicBaseStatusIndex = 0;
             dynamicLastRandomIndex = -1;
+
             if (dynamicStatuses.Count == 0)
-            {
-                dynamicStatusIndex = 0;
                 return;
-            }
 
-            if (string.Equals(settings.dynamicMode, "Random", StringComparison.OrdinalIgnoreCase) && dynamicStatuses.Count > 1)
-            {
-                dynamicStatusIndex = dynamicRandom.Next(dynamicStatuses.Count);
-                dynamicLastRandomIndex = dynamicStatusIndex;
-            }
-            else
-            {
-                dynamicStatusIndex = 0;
-            }
-
-            if (string.Equals(settings.dynamicMode, "Process Priority", StringComparison.OrdinalIgnoreCase))
-                ResolveProcessDynamicStatus();
-        }
-
-        /// <summary>
-        /// Advances the active status according to the selected rotation mode.
-        /// </summary>
-        private void AdvanceDynamicStatus()
-        {
-            if (dynamicStatuses.Count <= 1 ||
-                string.Equals(settings.dynamicMode, "Process Priority", StringComparison.OrdinalIgnoreCase))
-            {
-                if (string.Equals(settings.dynamicMode, "Process Priority", StringComparison.OrdinalIgnoreCase))
-                    ResolveProcessDynamicStatus();
-                else
-                    dynamicStatusIndex = 0;
-                return;
-            }
+            List<int> rotatable = GetRotatableStatusIndices();
 
             if (string.Equals(settings.dynamicMode, "Random", StringComparison.OrdinalIgnoreCase))
             {
-                int nextIndex;
-                do
-                    nextIndex = dynamicRandom.Next(dynamicStatuses.Count);
-                while (nextIndex == dynamicLastRandomIndex);
-                dynamicStatusIndex = nextIndex;
-                dynamicLastRandomIndex = nextIndex;
-                return;
+                if (rotatable.Count > 0)
+                {
+                    dynamicBaseStatusIndex = rotatable[dynamicRandom.Next(rotatable.Count)];
+                    dynamicLastRandomIndex = dynamicBaseStatusIndex;
+                }
             }
-
-            dynamicStatusIndex++;
-            if (dynamicStatusIndex >= dynamicStatuses.Count)
-                dynamicStatusIndex = 0;
+            else if (rotatable.Count > 0)
+            {
+                dynamicBaseStatusIndex = rotatable[0];
+            }
         }
 
         /// <summary>
-        /// Selects the highest-priority matching process preset. Lower number means higher priority.
+        /// Returns presets available to the normal Sequential/Random rotation.
+        /// Triggered presets are reserved for their own override rules.
         /// </summary>
-        private void ResolveProcessDynamicStatus()
+        private List<int> GetRotatableStatusIndices()
         {
-            if (dynamicStatuses.Count == 0)
-            {
-                dynamicStatusIndex = 0;
-                return;
-            }
-
-            int matchingIndex = -1;
-            int matchingPriority = int.MaxValue;
+            List<int> indices = new List<int>();
 
             for (int i = 0; i < dynamicStatuses.Count; i++)
             {
                 DynamicStatus status = dynamicStatuses[i];
-                if (status == null || !status.ProcessTriggerEnabled || status.Processes == null || status.Processes.Count == 0)
+                if (status == null || status.ProcessTriggerEnabled || status.IdleTriggerEnabled)
                     continue;
 
-                if (!IsAnyProcessRunning(status.Processes))
-                    continue;
-
-                int priority = status.Priority <= 0 ? 100 : status.Priority;
-                if (matchingIndex < 0 || priority < matchingPriority)
-                {
-                    matchingIndex = i;
-                    matchingPriority = priority;
-                }
+                indices.Add(i);
             }
 
-            if (matchingIndex >= 0)
-            {
-                dynamicStatusIndex = matchingIndex;
-                return;
-            }
+            return indices;
+        }
 
-            int fallbackIndex = -1;
-            int fallbackPriority = int.MaxValue;
+        /// <summary>
+        /// Finds the highest-priority idle preset. Lower number means higher priority.
+        /// </summary>
+        private int FindIdleDynamicStatusIndex()
+        {
+            int idleIndex = -1;
+            int idlePriority = int.MaxValue;
+
             for (int i = 0; i < dynamicStatuses.Count; i++)
             {
                 DynamicStatus status = dynamicStatuses[i];
-                if (status == null || !status.Fallback)
+                if (status == null || !status.IdleTriggerEnabled)
                     continue;
 
                 int priority = status.Priority <= 0 ? 100 : status.Priority;
-                if (fallbackIndex < 0 || priority < fallbackPriority)
+                if (idleIndex < 0 || priority < idlePriority)
                 {
-                    fallbackIndex = i;
-                    fallbackPriority = priority;
+                    idleIndex = i;
+                    idlePriority = priority;
                 }
             }
 
-            dynamicStatusIndex = fallbackIndex >= 0 ? fallbackIndex : 0;
+            return idleIndex;
         }
 
         /// <summary>
@@ -965,10 +964,173 @@ namespace CustomRPC
                 }
                 catch
                 {
-                    // A process can disappear between enumeration and access; ignore that tick.
+                    // A process can disappear between enumeration and access; ignore that check.
                 }
             }
+
             return false;
+        }
+
+        /// <summary>
+        /// Finds the highest-priority process preset whose process is running. Lower number means higher priority.
+        /// </summary>
+        private int FindProcessDynamicStatusIndex()
+        {
+            int matchingIndex = -1;
+            int matchingPriority = int.MaxValue;
+
+            for (int i = 0; i < dynamicStatuses.Count; i++)
+            {
+                DynamicStatus status = dynamicStatuses[i];
+                if (status == null || !status.ProcessTriggerEnabled || status.Processes == null || status.Processes.Count == 0)
+                    continue;
+
+                if (!IsAnyProcessRunning(status.Processes))
+                    continue;
+
+                int priority = status.Priority <= 0 ? 100 : status.Priority;
+                if (matchingIndex < 0 || priority < matchingPriority)
+                {
+                    matchingIndex = i;
+                    matchingPriority = priority;
+                }
+            }
+
+            return matchingIndex;
+        }
+
+        /// <summary>
+        /// Finds the highest-priority fallback preset. Lower number means higher priority.
+        /// </summary>
+        private int FindFallbackDynamicStatusIndex()
+        {
+            int fallbackIndex = -1;
+            int fallbackPriority = int.MaxValue;
+
+            for (int i = 0; i < dynamicStatuses.Count; i++)
+            {
+                DynamicStatus status = dynamicStatuses[i];
+                if (status == null || !status.Fallback)
+                    continue;
+
+                int priority = status.Priority <= 0 ? 100 : status.Priority;
+                if (fallbackIndex < 0 || priority < fallbackPriority)
+                {
+                    fallbackIndex = i;
+                    fallbackPriority = priority;
+                }
+            }
+
+            return fallbackIndex;
+        }
+
+        /// <summary>
+        /// Returns the currently active override preset, or -1 when no override is active.
+        /// Idle has precedence over process detection.
+        /// </summary>
+        private int FindDynamicOverrideIndex()
+        {
+            if (IsUserIdle())
+            {
+                int idleIndex = FindIdleDynamicStatusIndex();
+                if (idleIndex >= 0)
+                    return idleIndex;
+            }
+
+            return FindProcessDynamicStatusIndex();
+        }
+
+        /// <summary>
+        /// Advances the global Sequential/Random rotation. Triggered presets can override it
+        /// without changing the saved base position.
+        /// </summary>
+        private void AdvanceDynamicStatus()
+        {
+            if (dynamicStatuses.Count == 0)
+                return;
+
+            if (FindDynamicOverrideIndex() >= 0)
+                return;
+
+            if (string.Equals(settings.dynamicMode, "Process Priority", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            List<int> rotatable = GetRotatableStatusIndices();
+            if (rotatable.Count == 0)
+                return;
+
+            if (string.Equals(settings.dynamicMode, "Random", StringComparison.OrdinalIgnoreCase))
+            {
+                if (rotatable.Count == 1)
+                {
+                    dynamicBaseStatusIndex = rotatable[0];
+                    dynamicLastRandomIndex = dynamicBaseStatusIndex;
+                    return;
+                }
+
+                int nextIndex;
+                do
+                {
+                    nextIndex = rotatable[dynamicRandom.Next(rotatable.Count)];
+                }
+                while (nextIndex == dynamicLastRandomIndex);
+
+                dynamicBaseStatusIndex = nextIndex;
+                dynamicLastRandomIndex = nextIndex;
+                return;
+            }
+
+            int currentPosition = rotatable.IndexOf(dynamicBaseStatusIndex);
+            if (currentPosition < 0)
+            {
+                dynamicBaseStatusIndex = rotatable[0];
+                return;
+            }
+
+            currentPosition++;
+            if (currentPosition >= rotatable.Count)
+                currentPosition = 0;
+
+            dynamicBaseStatusIndex = rotatable[currentPosition];
+        }
+
+        /// <summary>
+        /// Gets the currently selected Dynamic Presence status.
+        /// Process and idle presets override the global rotation when active.
+        /// </summary>
+        private DynamicStatus GetCurrentDynamicStatus()
+        {
+            if (dynamicStatuses.Count == 0)
+                return null;
+
+            int overrideIndex = FindDynamicOverrideIndex();
+            if (overrideIndex >= 0)
+            {
+                dynamicStatusIndex = overrideIndex;
+                return dynamicStatuses[overrideIndex];
+            }
+
+            if (string.Equals(settings.dynamicMode, "Process Priority", StringComparison.OrdinalIgnoreCase))
+            {
+                int fallbackIndex = FindFallbackDynamicStatusIndex();
+                if (fallbackIndex >= 0)
+                {
+                    dynamicStatusIndex = fallbackIndex;
+                    return dynamicStatuses[fallbackIndex];
+                }
+
+                return null;
+            }
+
+            List<int> rotatable = GetRotatableStatusIndices();
+            if (rotatable.Count == 0)
+                return null;
+
+            if (!rotatable.Contains(dynamicBaseStatusIndex))
+                dynamicBaseStatusIndex = rotatable[0];
+
+            dynamicStatusIndex = dynamicBaseStatusIndex;
+            return dynamicStatuses[dynamicBaseStatusIndex];
         }
 
         /// <summary>
@@ -1019,23 +1181,6 @@ namespace CustomRPC
 
             AdvanceDynamicStatus();
             SetPresence();
-        }
-
-        /// <summary>
-        /// Gets the currently selected Dynamic Presence status.
-        /// </summary>
-        private DynamicStatus GetCurrentDynamicStatus()
-        {
-            if (dynamicStatuses.Count == 0)
-                return null;
-
-            if (string.Equals(settings.dynamicMode, "Process Priority", StringComparison.OrdinalIgnoreCase))
-                ResolveProcessDynamicStatus();
-
-            if (dynamicStatusIndex < 0 || dynamicStatusIndex >= dynamicStatuses.Count)
-                dynamicStatusIndex = 0;
-
-            return dynamicStatuses[dynamicStatusIndex];
         }
 
         /// <summary>

@@ -39,6 +39,7 @@ namespace CustomRPC
         public string Button2URL { get; set; }
 
         public bool ProcessTriggerEnabled { get; set; }
+        public bool IdleTriggerEnabled { get; set; }
         public bool Fallback { get; set; }
         public int Priority { get; set; }
         public List<string> Processes { get; set; }
