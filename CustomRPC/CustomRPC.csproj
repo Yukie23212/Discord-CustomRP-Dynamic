@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -32,7 +32,8 @@
     <BootstrapperEnabled>true</BootstrapperEnabled>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
-    <PlatformTarget>AnyCPU</PlatformTarget>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
@@ -42,7 +43,8 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
-    <PlatformTarget>AnyCPU</PlatformTarget>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
     <OutputPath>bin\Release\</OutputPath>
@@ -95,6 +97,16 @@
     </Compile>
     <Compile Include="AppCenterSecret.cs" />
     <Compile Include="ConnectionManager.cs" />
+    <Compile Include="HardwareMonitor.cs" />
+    <Compile Include="DynamicStatus.cs" />
+    <Compile Include="DynamicPresenceForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Properties\Settings.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DesignTimeSharedInput>True</DesignTimeSharedInput>
+      <DependentUpon>Settings.settings</DependentUpon>
+    </Compile>
     <Compile Include="Themes.cs" />
     <Compile Include="ErrorReportViewer.cs">
       <SubType>Form</SubType>
@@ -1211,11 +1223,6 @@
       <Generator>SettingsSingleFileGenerator</Generator>
       <LastGenOutput>Settings.Designer.cs</LastGenOutput>
     </None>
-    <Compile Include="Properties\Settings.Designer.cs">
-      <AutoGen>True</AutoGen>
-      <DependentUpon>Settings.settings</DependentUpon>
-      <DesignTimeSharedInput>True</DesignTimeSharedInput>
-    </Compile>
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config">
@@ -1264,6 +1271,9 @@
     <PackageReference Include="HtmlRenderer.WinForms">
       <Version>1.6.1</Version>
     </PackageReference>
+    <PackageReference Include="LibreHardwareMonitorLib">
+      <Version>0.9.6</Version>
+    </PackageReference>
     <PackageReference Include="Microsoft.AppCenter.Analytics">
       <Version>5.0.7</Version>
     </PackageReference>
@@ -1283,11 +1293,17 @@
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>
     <PostBuildEvent>"$(ProjectDir)InsertIcons.exe" "$(TargetPath)" "$(ProjectDir)Resources\preset.ico"
-cd $(ProjectDir)
-powershell -ExecutionPolicy RemoteSigned .\AppSecret.ps1 post</PostBuildEvent>
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(ProjectDir)AppSecret.ps1" post</PostBuildEvent>
   </PropertyGroup>
   <PropertyGroup>
-    <PreBuildEvent>cd $(ProjectDir)
-powershell -ExecutionPolicy RemoteSigned .\AppSecret.ps1 pre</PreBuildEvent>
+    <PreBuildEvent>powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(ProjectDir)AppSecret.ps1" pre</PreBuildEvent>
   </PropertyGroup>
+  <Target Name="CopyLibreHardwareMonitorRuntime" AfterTargets="Build">
+    <PropertyGroup>
+      <LibreHardwareMonitorLibPath Condition="'$(NuGetPackageRoot)' != ''">$(NuGetPackageRoot)librehardwaremonitorlib\0.9.6\runtimes\win-x64\lib\net472\LibreHardwareMonitorLib.dll</LibreHardwareMonitorLibPath>
+      <LibreHardwareMonitorLibPath Condition="'$(LibreHardwareMonitorLibPath)' == ''">$(UserProfile)\.nuget\packages\librehardwaremonitorlib\0.9.6\runtimes\win-x64\lib\net472\LibreHardwareMonitorLib.dll</LibreHardwareMonitorLibPath>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(LibreHardwareMonitorLibPath)')" Text="LibreHardwareMonitorLib.dll was not found at: $(LibreHardwareMonitorLibPath)" />
+    <Copy SourceFiles="$(LibreHardwareMonitorLibPath)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

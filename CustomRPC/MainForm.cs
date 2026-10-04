@@ -18,6 +18,7 @@ using System.Windows.Forms;
 using System.Xml.Serialization;
 using Application = System.Windows.Forms.Application;
 using Button = System.Windows.Forms.Button;
+using Label = System.Windows.Forms.Label;
 using DButton = DiscordRPC.Button;
 using Timer = System.Timers.Timer;
 
@@ -159,6 +160,37 @@ namespace CustomRPC
         Timer localTimeTimer = new Timer();
 
         /// <summary>
+        /// Timer used for dynamic Rich Presence updates.
+        /// </summary>
+        System.Windows.Forms.Timer dynamicPresenceTimer =
+            new System.Windows.Forms.Timer();
+
+        /// <summary>
+        /// Hardware monitor used by Dynamic Presence.
+        /// </summary>
+        HardwareMonitor hardwareMonitor;
+
+        /// <summary>
+        /// User-defined Dynamic Presence statuses.
+        /// </summary>
+        List<DynamicStatus> dynamicStatuses = new List<DynamicStatus>();
+
+        /// <summary>
+        /// Current index in the dynamic status list.
+        /// </summary>
+        int dynamicStatusIndex = 0;
+
+        /// <summary>
+        /// Last randomly selected status index. Used to prevent an immediate repeat.
+        /// </summary>
+        int dynamicLastRandomIndex = -1;
+
+        /// <summary>
+        /// Random generator used by Random Dynamic Presence mode.
+        /// </summary>
+        readonly Random dynamicRandom = new Random();
+
+        /// <summary>
         /// Settings of the application. Self-explanatory.
         /// </summary>
         Properties.Settings settings = Properties.Settings.Default;
@@ -255,6 +287,11 @@ namespace CustomRPC
         {
             InitializeComponent();
 
+            hardwareMonitor = new HardwareMonitor();
+
+            InitializeDynamicPresenceMenuItem();
+            LoadDynamicPresenceSettings();
+
             // Populating language related menu items
             Utils.LanguagesSetup(translatorsToolStripMenuItem, OpenPersonsPage, languageToolStripMenuItem, ChangeLanguage);
 
@@ -276,6 +313,10 @@ namespace CustomRPC
             // Setting up a midnight presence update timer
             localTimeTimer.AutoReset = false;
             localTimeTimer.Elapsed += LocalTimeTimer_Elapsed;
+
+            // Setting up the Dynamic Presence timer
+            dynamicPresenceTimer.Interval = 5000;
+            dynamicPresenceTimer.Tick += DynamicPresenceTimer_Tick;
 
             // If we supply a preset file to import on load, load it right away
             if (preset is string)
@@ -367,13 +408,9 @@ namespace CustomRPC
             if (settings.customTimestampEnd.CompareTo(new DateTime(1969, 1, 1, 0, 0, 0)) == 0)
                 settings.customTimestampEnd = DateTime.Now;
 
-            // Change the earliest date user can choose (1 in unix seconds) according to user's timezone
+            // Change the earliest date user can choose according to user's timezone
             dateTimePickerTimestampStart.MinDate = dateTimePickerTimestampEnd.MinDate =
                 new DateTime(1970, 1, 1, 0, 0, 1, DateTimeKind.Utc).ToLocalTime();
-
-            // Change the latest date user can choose (99999999999 in unix seconds) according to user's timezone
-            dateTimePickerTimestampStart.MaxDate = dateTimePickerTimestampEnd.MaxDate =
-                new DateTime(5138, 11, 16, 9, 46, 39, DateTimeKind.Utc).ToLocalTime();
 
             // Localize the header of the tooltip because Visual Studio can't do that for some reason
             toolTipInfo.ToolTipTitle = Strings.information;
@@ -531,7 +568,6 @@ namespace CustomRPC
                 buttonConnect.FlatStyle = buttonDisconnect.FlatStyle = buttonUpdatePresence.FlatStyle = FlatStyle.Standard;
             }
         }
-
         /// <summary>
         /// Will be called 10 seconds after a failed connection to try and reconnect.
         /// </summary>
@@ -571,6 +607,435 @@ namespace CustomRPC
             var report = await Crashes.GetLastSessionCrashReportAsync();
 
             new ErrorReportViewer(report.StackTrace).ShowDialog();
+        }
+
+        /// <summary>
+        /// Adds Dynamic Presence to the Settings menu.
+        /// </summary>
+        private void InitializeDynamicPresenceMenuItem()
+        {
+            ToolStripMenuItem dynamicPresenceMenuItem =
+                new ToolStripMenuItem("Dynamic Presence...")
+                {
+                    Name = "dynamicPresenceToolStripMenuItem"
+                };
+
+            dynamicPresenceMenuItem.Click += OpenDynamicPresenceSettings;
+            settingsToolStripMenuItem.DropDownItems.Insert(0, dynamicPresenceMenuItem);
+        }
+
+        /// <summary>
+        /// Deserializes the saved Dynamic Presence presets.
+        /// </summary>
+        private static List<DynamicStatus> DeserializeDynamicStatuses(string serialized)
+        {
+            if (string.IsNullOrWhiteSpace(serialized))
+                return new List<DynamicStatus>();
+
+            try
+            {
+                XmlSerializer serializer = new XmlSerializer(typeof(List<DynamicStatus>));
+                using (StringReader reader = new StringReader(serialized))
+                {
+                    return serializer.Deserialize(reader) as List<DynamicStatus> ?? new List<DynamicStatus>();
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                return new List<DynamicStatus>();
+            }
+        }
+
+        /// <summary>
+        /// Serializes the user-defined Dynamic Presence presets.
+        /// </summary>
+        private static string SerializeDynamicStatuses(List<DynamicStatus> statuses)
+        {
+            XmlSerializer serializer = new XmlSerializer(typeof(List<DynamicStatus>));
+            using (StringWriter writer = new StringWriter(CultureInfo.InvariantCulture))
+            {
+                serializer.Serialize(writer, statuses ?? new List<DynamicStatus>());
+                return writer.ToString();
+            }
+        }
+
+        /// <summary>
+        /// Creates a full dynamic preset from the current static CustomRP configuration.
+        /// </summary>
+        private DynamicStatus CreateDynamicStatusFromCurrentSettings(int priority)
+        {
+            return new DynamicStatus
+            {
+                Name = settings.name ?? "",
+                Details = settings.details ?? "",
+                DetailsURL = settings.detailsURL ?? "",
+                State = settings.state ?? "",
+                StateURL = settings.stateURL ?? "",
+                Type = settings.type,
+                Display = settings.display,
+                PartySize = (int)settings.partySize,
+                PartyMax = (int)settings.partyMax,
+                Timestamps = settings.timestamps,
+                CustomTimestamp = settings.customTimestamp,
+                CustomTimestampEndEnabled = settings.customTimestampEndEnabled,
+                CustomTimestampEnd = settings.customTimestampEnd,
+                LargeKey = settings.largeKey ?? "",
+                LargeText = settings.largeText ?? "",
+                LargeURL = settings.largeURL ?? "",
+                SmallKey = settings.smallKey ?? "",
+                SmallText = settings.smallText ?? "",
+                SmallURL = settings.smallURL ?? "",
+                Button1Text = settings.button1Text ?? "",
+                Button1URL = settings.button1URL ?? "",
+                Button2Text = settings.button2Text ?? "",
+                Button2URL = settings.button2URL ?? "",
+                Priority = priority,
+                Processes = new List<string>()
+            };
+        }
+
+        /// <summary>
+        /// Loads and, when necessary, migrates Dynamic Presence configuration.
+        /// </summary>
+        private void LoadDynamicPresenceSettings()
+        {
+            string serialized = settings.dynamicStatuses ?? "";
+            dynamicStatuses = DeserializeDynamicStatuses(serialized);
+
+            bool legacy = dynamicStatuses.Count > 0 &&
+                          serialized.IndexOf("<Type>", StringComparison.Ordinal) < 0 &&
+                          serialized.IndexOf("<Display>", StringComparison.Ordinal) < 0;
+
+            bool changed = false;
+
+            if (legacy)
+            {
+                for (int i = 0; i < dynamicStatuses.Count; i++)
+                {
+                    DynamicStatus migrated = CreateDynamicStatusFromCurrentSettings(i + 1);
+                    migrated.Name = dynamicStatuses[i].Name ?? "";
+                    migrated.Details = dynamicStatuses[i].Details ?? "";
+                    migrated.State = dynamicStatuses[i].State ?? "";
+                    dynamicStatuses[i] = migrated;
+                }
+                changed = true;
+            }
+
+            int beforeCleanup = dynamicStatuses.Count;
+            RemoveEmptyDynamicStatuses();
+            if (dynamicStatuses.Count != beforeCleanup)
+                changed = true;
+
+            NormalizeDynamicStatuses();
+
+            if (changed)
+            {
+                settings.dynamicStatuses = SerializeDynamicStatuses(dynamicStatuses);
+                Utils.SaveSettings();
+            }
+
+            ResetDynamicStatusSelection();
+        }
+
+        /// <summary>
+        /// Returns true for the blank legacy placeholder that older versions used as Preset 1.
+        /// </summary>
+        private static bool IsEmptyDynamicStatus(DynamicStatus status)
+        {
+            if (status == null)
+                return true;
+
+            return string.IsNullOrWhiteSpace(status.Name) &&
+                   string.IsNullOrWhiteSpace(status.Details) &&
+                   string.IsNullOrWhiteSpace(status.DetailsURL) &&
+                   string.IsNullOrWhiteSpace(status.State) &&
+                   string.IsNullOrWhiteSpace(status.StateURL) &&
+                   string.IsNullOrWhiteSpace(status.LargeKey) &&
+                   string.IsNullOrWhiteSpace(status.LargeText) &&
+                   string.IsNullOrWhiteSpace(status.LargeURL) &&
+                   string.IsNullOrWhiteSpace(status.SmallKey) &&
+                   string.IsNullOrWhiteSpace(status.SmallText) &&
+                   string.IsNullOrWhiteSpace(status.SmallURL) &&
+                   string.IsNullOrWhiteSpace(status.Button1Text) &&
+                   string.IsNullOrWhiteSpace(status.Button1URL) &&
+                   string.IsNullOrWhiteSpace(status.Button2Text) &&
+                   string.IsNullOrWhiteSpace(status.Button2URL) &&
+                   status.Type == 0 &&
+                   status.Display == 0 &&
+                   status.PartySize == 0 &&
+                   status.PartyMax == 0 &&
+                   status.Timestamps == 0 &&
+                   !status.CustomTimestampEndEnabled &&
+                   !status.ProcessTriggerEnabled &&
+                   !status.Fallback &&
+                   (status.Processes == null || status.Processes.Count == 0);
+        }
+
+        /// <summary>
+        /// Removes blank legacy placeholders without removing real user presets.
+        /// </summary>
+        private void RemoveEmptyDynamicStatuses()
+        {
+            dynamicStatuses.RemoveAll(IsEmptyDynamicStatus);
+        }
+
+        /// <summary>
+        /// Normalizes values which may come from older serialized presets.
+        /// </summary>
+        private void NormalizeDynamicStatuses()
+        {
+            for (int i = 0; i < dynamicStatuses.Count; i++)
+            {
+                DynamicStatus status = dynamicStatuses[i] ?? new DynamicStatus();
+                if (status.Processes == null)
+                    status.Processes = new List<string>();
+                if (status.Priority <= 0)
+                    status.Priority = i + 1;
+                if (status.PartySize < 0)
+                    status.PartySize = 0;
+                if (status.PartyMax < 0)
+                    status.PartyMax = 0;
+                if (status.CustomTimestamp == default(DateTime))
+                    status.CustomTimestamp = settings.customTimestamp;
+                if (status.CustomTimestampEnd == default(DateTime))
+                    status.CustomTimestampEnd = settings.customTimestampEnd;
+                dynamicStatuses[i] = status;
+            }
+        }
+
+        /// <summary>
+        /// Opens the Dynamic Presence editor window.
+        /// </summary>
+        private void OpenDynamicPresenceSettings(object sender, EventArgs e)
+        {
+            using (DynamicPresenceForm dialog =
+                new DynamicPresenceForm(
+                    settings.dynamicEnabled,
+                    settings.dynamicInterval,
+                    settings.dynamicMode,
+                    dynamicStatuses))
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                    return;
+
+                settings.dynamicEnabled = dialog.DynamicEnabled;
+                settings.dynamicInterval = dialog.DynamicInterval;
+                settings.dynamicMode = dialog.DynamicMode;
+                dynamicStatuses = dialog.DynamicStatuses ?? new List<DynamicStatus>();
+                RemoveEmptyDynamicStatuses();
+                NormalizeDynamicStatuses();
+                settings.dynamicStatuses = SerializeDynamicStatuses(dynamicStatuses);
+                ResetDynamicStatusSelection();
+                Utils.SaveSettings();
+                SetPresence();
+                StartDynamicPresenceTimer();
+            }
+        }
+
+        /// <summary>
+        /// Resets the active status selection after settings are applied or loaded.
+        /// </summary>
+        private void ResetDynamicStatusSelection()
+        {
+            dynamicLastRandomIndex = -1;
+            if (dynamicStatuses.Count == 0)
+            {
+                dynamicStatusIndex = 0;
+                return;
+            }
+
+            if (string.Equals(settings.dynamicMode, "Random", StringComparison.OrdinalIgnoreCase) && dynamicStatuses.Count > 1)
+            {
+                dynamicStatusIndex = dynamicRandom.Next(dynamicStatuses.Count);
+                dynamicLastRandomIndex = dynamicStatusIndex;
+            }
+            else
+            {
+                dynamicStatusIndex = 0;
+            }
+
+            if (string.Equals(settings.dynamicMode, "Process Priority", StringComparison.OrdinalIgnoreCase))
+                ResolveProcessDynamicStatus();
+        }
+
+        /// <summary>
+        /// Advances the active status according to the selected rotation mode.
+        /// </summary>
+        private void AdvanceDynamicStatus()
+        {
+            if (dynamicStatuses.Count <= 1 ||
+                string.Equals(settings.dynamicMode, "Process Priority", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.Equals(settings.dynamicMode, "Process Priority", StringComparison.OrdinalIgnoreCase))
+                    ResolveProcessDynamicStatus();
+                else
+                    dynamicStatusIndex = 0;
+                return;
+            }
+
+            if (string.Equals(settings.dynamicMode, "Random", StringComparison.OrdinalIgnoreCase))
+            {
+                int nextIndex;
+                do
+                    nextIndex = dynamicRandom.Next(dynamicStatuses.Count);
+                while (nextIndex == dynamicLastRandomIndex);
+                dynamicStatusIndex = nextIndex;
+                dynamicLastRandomIndex = nextIndex;
+                return;
+            }
+
+            dynamicStatusIndex++;
+            if (dynamicStatusIndex >= dynamicStatuses.Count)
+                dynamicStatusIndex = 0;
+        }
+
+        /// <summary>
+        /// Selects the highest-priority matching process preset. Lower number means higher priority.
+        /// </summary>
+        private void ResolveProcessDynamicStatus()
+        {
+            if (dynamicStatuses.Count == 0)
+            {
+                dynamicStatusIndex = 0;
+                return;
+            }
+
+            int matchingIndex = -1;
+            int matchingPriority = int.MaxValue;
+
+            for (int i = 0; i < dynamicStatuses.Count; i++)
+            {
+                DynamicStatus status = dynamicStatuses[i];
+                if (status == null || !status.ProcessTriggerEnabled || status.Processes == null || status.Processes.Count == 0)
+                    continue;
+
+                if (!IsAnyProcessRunning(status.Processes))
+                    continue;
+
+                int priority = status.Priority <= 0 ? 100 : status.Priority;
+                if (matchingIndex < 0 || priority < matchingPriority)
+                {
+                    matchingIndex = i;
+                    matchingPriority = priority;
+                }
+            }
+
+            if (matchingIndex >= 0)
+            {
+                dynamicStatusIndex = matchingIndex;
+                return;
+            }
+
+            int fallbackIndex = -1;
+            int fallbackPriority = int.MaxValue;
+            for (int i = 0; i < dynamicStatuses.Count; i++)
+            {
+                DynamicStatus status = dynamicStatuses[i];
+                if (status == null || !status.Fallback)
+                    continue;
+
+                int priority = status.Priority <= 0 ? 100 : status.Priority;
+                if (fallbackIndex < 0 || priority < fallbackPriority)
+                {
+                    fallbackIndex = i;
+                    fallbackPriority = priority;
+                }
+            }
+
+            dynamicStatusIndex = fallbackIndex >= 0 ? fallbackIndex : 0;
+        }
+
+        /// <summary>
+        /// Checks whether any configured process is currently running.
+        /// </summary>
+        private static bool IsAnyProcessRunning(IEnumerable<string> processes)
+        {
+            foreach (string configuredName in processes ?? Enumerable.Empty<string>())
+            {
+                string name = configuredName?.Trim() ?? "";
+                if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    name = name.Substring(0, name.Length - 4);
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+
+                try
+                {
+                    if (Process.GetProcessesByName(name).Length > 0)
+                        return true;
+                }
+                catch
+                {
+                    // A process can disappear between enumeration and access; ignore that tick.
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Replaces Dynamic Presence hardware variables with current values.
+        /// </summary>
+        private string ApplyDynamicVariables(string value, int maxLength)
+        {
+            if (value == null)
+                return "";
+
+            if (!settings.dynamicEnabled)
+                return value;
+
+            value = value.Replace("{cpu_usage}", hardwareMonitor.CpuUsage.HasValue ? Math.Round(hardwareMonitor.CpuUsage.Value).ToString("0") : "N/A");
+            value = value.Replace("{cpu_temp}", hardwareMonitor.CpuTemperature.HasValue ? Math.Round(hardwareMonitor.CpuTemperature.Value).ToString("0") : "N/A");
+            value = value.Replace("{gpu_usage}", hardwareMonitor.GpuUsage.HasValue ? Math.Round(hardwareMonitor.GpuUsage.Value).ToString("0") : "N/A");
+            value = value.Replace("{gpu_temp}", hardwareMonitor.GpuTemperature.HasValue ? Math.Round(hardwareMonitor.GpuTemperature.Value).ToString("0") : "N/A");
+            value = value.Replace("{ram_used}", hardwareMonitor.RamUsedGB.ToString("0.0"));
+            value = value.Replace("{ram_total}", hardwareMonitor.RamTotalGB.ToString("0.0"));
+            value = value.Replace("{ram_usage}", Math.Round(hardwareMonitor.RamUsage).ToString("0"));
+            value = value.Replace("{vram_used}", hardwareMonitor.VramUsedGB.ToString("0.0"));
+            value = value.Replace("{vram_total}", hardwareMonitor.VramTotalGB.ToString("0.0"));
+            value = value.Replace("{vram_usage}", Math.Round(hardwareMonitor.VramUsage).ToString("0"));
+
+            return value.Length > maxLength ? value.Substring(0, maxLength) : value;
+        }
+
+        /// <summary>
+        /// Starts or stops the Dynamic Presence timer.
+        /// </summary>
+        private void StartDynamicPresenceTimer()
+        {
+            dynamicPresenceTimer.Stop();
+            if (!settings.dynamicEnabled || client == null || client.IsDisposed)
+                return;
+
+            dynamicPresenceTimer.Interval = Math.Max(3, settings.dynamicInterval) * 1000;
+            dynamicPresenceTimer.Start();
+        }
+
+        /// <summary>
+        /// Called periodically to update Dynamic Presence.
+        /// </summary>
+        private void DynamicPresenceTimer_Tick(object sender, EventArgs e)
+        {
+            if (!settings.dynamicEnabled)
+                return;
+
+            AdvanceDynamicStatus();
+            SetPresence();
+        }
+
+        /// <summary>
+        /// Gets the currently selected Dynamic Presence status.
+        /// </summary>
+        private DynamicStatus GetCurrentDynamicStatus()
+        {
+            if (dynamicStatuses.Count == 0)
+                return null;
+
+            if (string.Equals(settings.dynamicMode, "Process Priority", StringComparison.OrdinalIgnoreCase))
+                ResolveProcessDynamicStatus();
+
+            if (dynamicStatusIndex < 0 || dynamicStatusIndex >= dynamicStatuses.Count)
+                dynamicStatusIndex = 0;
+
+            return dynamicStatuses[dynamicStatusIndex];
         }
 
         /// <summary>
@@ -744,6 +1209,8 @@ namespace CustomRPC
             return client.Initialize();
         }
 
+
+
         /// <summary>
         /// Will be called if successfully connected and sent the presence payload.
         /// </summary>
@@ -833,6 +1300,7 @@ namespace CustomRPC
                 toolStripStatusLabelStatus.Text = Strings.statusUpdatingPresence;
 
                 SetPresence();
+                StartDynamicPresenceTimer();
             }));
         }
 
@@ -847,97 +1315,107 @@ namespace CustomRPC
 
             localTimeTimer.Stop();
 
-            // Add ZWS character if details or state textboxes start a no-break space character
-            foreach (var paramBox in new[] { textBoxDetails, textBoxState })
-            {
-                if (paramBox.Text.StartsWith(U00A0) && paramBox.Text.Length < paramBox.MaxLength)
-                    paramBox.Text = paramBox.Text.Insert(0, U200B);
-                // In case it doesn't fit but there's at least 2 space symbols, we can replace one of them with the zws
-                else if (paramBox.Text.StartsWith(U00A0 + U00A0))
-                    paramBox.Text = U200B + paramBox.Text.Substring(1);
-                // In case it still doesn't fit, why would you even use spaces then, 128 characters is a long string
-            }
+            if (settings.dynamicEnabled)
+                hardwareMonitor.Update();
 
-            if (settings.partySize > settings.partyMax)
-                settings.partyMax = settings.partySize;
+            DynamicStatus activeDynamicStatus = settings.dynamicEnabled ? GetCurrentDynamicStatus() : null;
 
-            settings.detailsURL = settings.detailsURL.Trim();
-            settings.stateURL = settings.stateURL.Trim();
-            settings.largeKey = settings.largeKey.Trim();
-            settings.largeURL = settings.largeURL.Trim();
-            settings.smallKey = settings.smallKey.Trim();
-            settings.smallURL = settings.smallURL.Trim();
-            settings.button1URL = settings.button1URL.Trim();
-            settings.button2URL = settings.button2URL.Trim();
+            string nameSource = activeDynamicStatus?.Name ?? settings.name;
+            if (string.IsNullOrEmpty(nameSource))
+                nameSource = settings.name;
 
-            var rp = new RichPresence()
-            {
-                Name = settings.name,
-                Type = (ActivityType)settings.type,
-                StatusDisplay = (StatusDisplayType)settings.display,
-                Details = settings.details,
-                State = settings.state,
-                Party = new Party()
-                {
-                    ID = (settings.partySize > 0 && settings.partyMax > 0) ? "CustomRP" : "",
-                    Size = (int)settings.partySize,
-                    Max = (int)settings.partyMax
-                },
-            };
+            string detailsSource = activeDynamicStatus != null ? activeDynamicStatus.Details : settings.details;
+            string detailsURLSource = activeDynamicStatus != null ? activeDynamicStatus.DetailsURL : settings.detailsURL;
+            string stateSource = activeDynamicStatus != null ? activeDynamicStatus.State : settings.state;
+            string stateURLSource = activeDynamicStatus != null ? activeDynamicStatus.StateURL : settings.stateURL;
 
-            Uri tempUri;
+            int typeValue = activeDynamicStatus != null ? activeDynamicStatus.Type : settings.type;
+            int displayValue = activeDynamicStatus != null ? activeDynamicStatus.Display : settings.display;
+            int partySize = activeDynamicStatus != null ? activeDynamicStatus.PartySize : (int)settings.partySize;
+            int partyMax = activeDynamicStatus != null ? activeDynamicStatus.PartyMax : (int)settings.partyMax;
+            int timestampValue = activeDynamicStatus != null ? activeDynamicStatus.Timestamps : settings.timestamps;
+            DateTime customTimestampStart = activeDynamicStatus != null ? activeDynamicStatus.CustomTimestamp : settings.customTimestamp;
+            DateTime customTimestampEnd = activeDynamicStatus != null ? activeDynamicStatus.CustomTimestampEnd : settings.customTimestampEnd;
+            bool customTimestampEndEnabled = activeDynamicStatus != null ? activeDynamicStatus.CustomTimestampEndEnabled : settings.customTimestampEndEnabled;
 
-            /* Unused
-            string GetProcessedURL(Uri origUri)
-            {
-                if (!origUri.Host.Contains("discordapp"))
-                    return origUri.AbsoluteUri;
+            string largeKey = activeDynamicStatus != null ? activeDynamicStatus.LargeKey : settings.largeKey;
+            string largeText = activeDynamicStatus != null ? activeDynamicStatus.LargeText : settings.largeText;
+            string largeURL = activeDynamicStatus != null ? activeDynamicStatus.LargeURL : settings.largeURL;
+            string smallKey = activeDynamicStatus != null ? activeDynamicStatus.SmallKey : settings.smallKey;
+            string smallText = activeDynamicStatus != null ? activeDynamicStatus.SmallText : settings.smallText;
+            string smallURL = activeDynamicStatus != null ? activeDynamicStatus.SmallURL : settings.smallURL;
+            string button1Text = activeDynamicStatus != null ? activeDynamicStatus.Button1Text : settings.button1Text;
+            string button1URL = activeDynamicStatus != null ? activeDynamicStatus.Button1URL : settings.button1URL;
+            string button2Text = activeDynamicStatus != null ? activeDynamicStatus.Button2Text : settings.button2Text;
+            string button2URL = activeDynamicStatus != null ? activeDynamicStatus.Button2URL : settings.button2URL;
 
-                var newUri = new UriBuilder(origUri.AbsoluteUri);
-                var newQuery = origUri.ParseQueryString();
+            string renderedName = ApplyDynamicVariables(nameSource, textBoxName.MaxLength);
+            string renderedDetails = ApplyDynamicVariables(detailsSource, textBoxDetails.MaxLength);
+            string renderedDetailsURL = ApplyDynamicVariables(detailsURLSource, textBoxDetailsURL.MaxLength);
+            string renderedState = ApplyDynamicVariables(stateSource, textBoxState.MaxLength);
+            string renderedStateURL = ApplyDynamicVariables(stateURLSource, textBoxStateURL.MaxLength);
+            string renderedLargeKey = ApplyDynamicVariables(largeKey, 512);
+            string renderedLargeText = ApplyDynamicVariables(largeText, textBoxLargeText.MaxLength);
+            string renderedLargeURL = ApplyDynamicVariables(largeURL, textBoxLargeURL.MaxLength);
+            string renderedSmallKey = ApplyDynamicVariables(smallKey, 512);
+            string renderedSmallText = ApplyDynamicVariables(smallText, textBoxSmallText.MaxLength);
+            string renderedSmallURL = ApplyDynamicVariables(smallURL, textBoxSmallURL.MaxLength);
+            string renderedButton1Text = ApplyDynamicVariables(button1Text, textBoxButton1Text.MaxLength);
+            string renderedButton1URL = ApplyDynamicVariables(button1URL, textBoxButton1URL.MaxLength);
+            string renderedButton2Text = ApplyDynamicVariables(button2Text, textBoxButton2Text.MaxLength);
+            string renderedButton2URL = ApplyDynamicVariables(button2URL, textBoxButton2URL.MaxLength);
 
-                newQuery.Remove("ex");
-                newQuery.Remove("is");
-                newQuery.Remove("hm");
-                newUri.Query = newQuery.ToString();
-
-                return newUri.Uri.AbsoluteUri;
-            }
-            */
+            if (partySize > partyMax)
+                partyMax = partySize;
 
             string ProcessURL(string url, int maxLength)
             {
                 if (string.IsNullOrEmpty(url))
                     return url;
 
+                url = url.Trim();
                 if (!url.Contains("://"))
                     url = "https://" + url;
 
                 try
                 {
+                    Uri tempUri;
                     if (Uri.TryCreate(url, UriKind.Absolute, out tempUri))
                         url = tempUri.AbsoluteUri.Replace(tempUri.Host, tempUri.IdnHost);
                 }
                 catch
                 {
-                    // Sometimes TryCreate throws errors, even when it's not supposed to, so we can just let it fail quietly
                 }
 
                 return url.Substring(0, Math.Min(maxLength, url.Length));
             }
 
-            settings.detailsURL = ProcessURL(settings.detailsURL, textBoxDetailsURL.MaxLength);
-            settings.stateURL = ProcessURL(settings.stateURL, textBoxStateURL.MaxLength);
+            string processedDetailsURL = ProcessURL(renderedDetailsURL, textBoxDetailsURL.MaxLength);
+            string processedStateURL = ProcessURL(renderedStateURL, textBoxStateURL.MaxLength);
+
+            var rp = new RichPresence
+            {
+                Name = renderedName,
+                Type = (ActivityType)typeValue,
+                StatusDisplay = (StatusDisplayType)displayValue,
+                Details = renderedDetails,
+                State = renderedState,
+                Party = new Party
+                {
+                    ID = (partySize > 0 && partyMax > 0) ? "CustomRP" : "",
+                    Size = partySize,
+                    Max = partyMax
+                }
+            };
 
             try
             {
-                rp.DetailsUrl = settings.detailsURL;
-                rp.StateUrl = settings.stateURL;
+                rp.DetailsUrl = processedDetailsURL;
+                rp.StateUrl = processedStateURL;
             }
             catch (Exception e)
             {
                 MessageBox.Show(e.Message, Strings.error, MessageBoxButtons.OK, MessageBoxIcon.Error, MessageBoxDefaultButton.Button1);
-
                 return false;
             }
 
@@ -945,45 +1423,42 @@ namespace CustomRPC
             {
                 if (key != null)
                     return Regex.Replace(key, @"//((cdn)|(media))\.discordapp\.((com)|(net))/", "//customrp.xyz/proxy/");
-
                 return key;
-            };
+            }
 
             try
             {
-                // Thank you Discord, very cool
+                Uri tempUri;
                 bool IsMpExternalStringOverLimit(Uri uri)
                 {
                     return $"mp:external/43 characters that probably represent an id/{Uri.EscapeDataString(uri.Query)}/{uri.Scheme}/{(uri.IdnHost == "media.discordapp.net" ? "cdn.discordapp.com" : uri.IdnHost)}{uri.AbsolutePath}".Length > 256;
                 }
 
-                if (Uri.TryCreate(settings.smallKey, UriKind.Absolute, out tempUri))
+                if (Uri.TryCreate(renderedSmallKey, UriKind.Absolute, out tempUri))
                 {
                     if (IsMpExternalStringOverLimit(tempUri))
                         throw new ArgumentException("Small");
-
-                    settings.smallKey = tempUri.AbsoluteUri.Replace(tempUri.Host, tempUri.IdnHost);
+                    renderedSmallKey = tempUri.AbsoluteUri.Replace(tempUri.Host, tempUri.IdnHost);
                 }
 
-                if (Uri.TryCreate(settings.largeKey, UriKind.Absolute, out tempUri))
+                if (Uri.TryCreate(renderedLargeKey, UriKind.Absolute, out tempUri))
                 {
                     if (IsMpExternalStringOverLimit(tempUri))
                         throw new ArgumentException("Large");
-
-                    settings.largeKey = tempUri.AbsoluteUri.Replace(tempUri.Host, tempUri.IdnHost);
+                    renderedLargeKey = tempUri.AbsoluteUri.Replace(tempUri.Host, tempUri.IdnHost);
                 }
 
-                settings.largeURL = ProcessURL(settings.largeURL, textBoxLargeURL.MaxLength);
-                settings.smallURL = ProcessURL(settings.smallURL, textBoxSmallURL.MaxLength);
+                renderedLargeURL = ProcessURL(renderedLargeURL, textBoxLargeURL.MaxLength);
+                renderedSmallURL = ProcessURL(renderedSmallURL, textBoxSmallURL.MaxLength);
 
-                rp.Assets = new Assets()
+                rp.Assets = new Assets
                 {
-                    LargeImageKey = Proxify(settings.largeKey),
-                    LargeImageText = settings.largeText,
-                    LargeImageUrl = settings.largeURL,
-                    SmallImageKey = Proxify(settings.smallKey),
-                    SmallImageText = settings.smallText,
-                    SmallImageUrl = settings.smallURL,
+                    LargeImageKey = Proxify(renderedLargeKey),
+                    LargeImageText = renderedLargeText,
+                    LargeImageUrl = renderedLargeURL,
+                    SmallImageKey = Proxify(renderedSmallKey),
+                    SmallImageText = renderedSmallText,
+                    SmallImageUrl = renderedSmallURL
                 };
             }
             catch (Exception e)
@@ -992,37 +1467,20 @@ namespace CustomRPC
                     MessageBox.Show(Strings.errorInvalidImageURL + " (" + res.GetString("label" + e.Message + ".Text") + ")", Strings.error, MessageBoxButtons.OK, MessageBoxIcon.Error, MessageBoxDefaultButton.Button1);
                 else
                     MessageBox.Show(e.Message, Strings.error, MessageBoxButtons.OK, MessageBoxIcon.Error, MessageBoxDefaultButton.Button1);
-
                 return false;
-            }
-            finally
-            {
-                Utils.SaveSettings();
             }
 
             buttonsList.Clear();
+            string processedButton1URL = ProcessURL(renderedButton1URL, textBoxButton1URL.MaxLength);
+            string processedButton2URL = ProcessURL(renderedButton2URL, textBoxButton2URL.MaxLength);
 
-            settings.button1URL = ProcessURL(settings.button1URL, textBoxButton1URL.MaxLength);
-            settings.button2URL = ProcessURL(settings.button2URL, textBoxButton2URL.MaxLength);
-
-            Utils.SaveSettings();
-
-            // This try block technically isn't necessary, except if you screw up URL field processing (ask me how I know)
             try
             {
-                if (settings.button1Text != "" && settings.button1URL != "")
-                    buttonsList.Add(new DButton()
-                    {
-                        Label = settings.button1Text,
-                        Url = settings.button1URL
-                    });
+                if (!string.IsNullOrEmpty(renderedButton1Text) && !string.IsNullOrEmpty(processedButton1URL))
+                    buttonsList.Add(new DButton { Label = renderedButton1Text, Url = processedButton1URL });
 
-                if (settings.button2Text != "" && settings.button2URL != "")
-                    buttonsList.Add(new DButton()
-                    {
-                        Label = settings.button2Text,
-                        Url = settings.button2URL
-                    });
+                if (!string.IsNullOrEmpty(renderedButton2Text) && !string.IsNullOrEmpty(processedButton2URL))
+                    buttonsList.Add(new DButton { Label = renderedButton2Text, Url = processedButton2URL });
             }
             catch
             {
@@ -1032,38 +1490,30 @@ namespace CustomRPC
 
             rp.Buttons = buttonsList.ToArray();
 
-            switch ((TimestampType)settings.timestamps)
+            switch ((TimestampType)timestampValue)
             {
-                case TimestampType.SinceLastConnection: rp.Timestamps = new Timestamps(timestampConnected); break;
-                case TimestampType.SinceStartup: rp.Timestamps = new Timestamps(timestampStarted); break;
-                case TimestampType.SincePresenceUpdate: rp.Timestamps = Timestamps.Now; break;
+                case TimestampType.SinceLastConnection:
+                    rp.Timestamps = new Timestamps(timestampConnected);
+                    break;
+                case TimestampType.SinceStartup:
+                    rp.Timestamps = new Timestamps(timestampStarted);
+                    break;
+                case TimestampType.SincePresenceUpdate:
+                    rp.Timestamps = Timestamps.Now;
+                    break;
                 case TimestampType.LocalTime:
                     rp.Timestamps = new Timestamps(DateTime.UtcNow.Subtract(new TimeSpan(DateTime.Now.Hour, DateTime.Now.Minute, DateTime.Now.Second)));
                     localTimeTimer.Interval = DateTime.Today.AddDays(1).AddSeconds(5).Subtract(DateTime.Now).TotalMilliseconds;
                     break;
                 case TimestampType.Custom:
-                    DateTime customTimestampStart = dateTimePickerTimestampStart.Value.ToUniversalTime();
-                    DateTime customTimestampEnd = dateTimePickerTimestampEnd.Value.ToUniversalTime();
-                    /* Not needed anymore
-                    /// I must apologize preemptively for this monster of an if-statement
-                    /// Timestamps before 2001-09-09 01:46:40 UTC only work if you have a "dumb" presence (the one that only has ID,
-                    /// timestamp and small image fields set)
-                    /// Technically, it doesn't even matter what date you put in the rich presence timestamp, since it only shows the hours
-                    /// since/to the timestamp
-                    if (customTimestampStart.CompareTo(new DateTime(2001, 9, 9, 1, 46, 40, DateTimeKind.Utc)) < 0 &&
-                        !(string.IsNullOrEmpty(settings.details) && string.IsNullOrEmpty(settings.state) && settings.partySize == 0 &&
-                        settings.partyMax == 0 && string.IsNullOrEmpty(settings.largeKey) && string.IsNullOrEmpty(settings.largeText) &&
-                        string.IsNullOrEmpty(settings.smallText) && string.IsNullOrEmpty(settings.button1Text) &&
-                        string.IsNullOrEmpty(settings.button1URL) && string.IsNullOrEmpty(settings.button2Text) &&
-                        string.IsNullOrEmpty(settings.button2URL)))
-                    {
-                        customTimestampStart = new DateTime(2002, 1, 1, customTimestampStart.Hour, customTimestampStart.Minute, customTimestampStart.Second, DateTimeKind.Utc);
-                    */
-                    if (checkBoxTimestampEnd.Checked)
+                    customTimestampStart = customTimestampStart.ToUniversalTime();
+                    customTimestampEnd = customTimestampEnd.ToUniversalTime();
+                    if (customTimestampEndEnabled)
                         rp.Timestamps = new Timestamps(customTimestampStart, customTimestampEnd);
                     else
                         rp.Timestamps = customTimestampStart.CompareTo(DateTime.UtcNow) < 0
-                            ? new Timestamps(customTimestampStart) : new Timestamps(DateTime.UtcNow, customTimestampStart);
+                            ? new Timestamps(customTimestampStart)
+                            : new Timestamps(DateTime.UtcNow, customTimestampStart);
                     break;
             }
 
@@ -1079,7 +1529,10 @@ namespace CustomRPC
                 return false;
             }
 
-            if ((TimestampType)settings.timestamps == TimestampType.LocalTime)
+            if (!settings.dynamicEnabled)
+                Utils.SaveSettings();
+
+            if ((TimestampType)timestampValue == TimestampType.LocalTime)
                 localTimeTimer.Start();
 
             return true;
@@ -1854,6 +2307,7 @@ namespace CustomRPC
                 buttonConnect.Enabled = false; // ...disable Connect button...
                 buttonDisconnect.Enabled = true; // ...enable Disconnect button...
                 trayMenuDisconnect.Enabled = true; // ...enable Disconnect button in tray menu...
+                textBoxID.ReadOnly = true; // ...make the ID field read only...
                 toolStripStatusLabelStatus.Text = Strings.statusConnecting; // and update the connection status label
             }
         }
@@ -1872,6 +2326,7 @@ namespace CustomRPC
             buttonDisconnect.Enabled = false;
             trayMenuDisconnect.Enabled = false;
             buttonUpdatePresence.Enabled = false;
+            textBoxID.ReadOnly = false;
             toolStripStatusLabelUsername.Text = "";
             toolStripStatusLabelStatus.Text = Strings.statusDisconnected;
             trayIcon.Text = $"{res.GetString("trayIcon.Text")}{(Program.IsSecondInstance ? " (2)" : "")}";
@@ -1881,6 +2336,7 @@ namespace CustomRPC
 
             restartTimer.Stop();
             localTimeTimer.Stop();
+            dynamicPresenceTimer.Stop();
 
             client.Dispose();
 
@@ -1895,6 +2351,7 @@ namespace CustomRPC
             // Quick disconnect
             restartTimer.Stop();
             localTimeTimer.Stop();
+            dynamicPresenceTimer.Stop();
             client.Dispose();
             textBoxID.BackColor = CurrentColors.BgTextFields;
 
@@ -1915,10 +2372,7 @@ namespace CustomRPC
         private void Update(object sender, EventArgs e)
         {
             Utils.SaveSettings();
-            if (client.ApplicationID == (string.IsNullOrEmpty(settings.id) ? defaultID : settings.id))
             SetPresence();
-            else
-                Reconnect();
         }
     }
 }

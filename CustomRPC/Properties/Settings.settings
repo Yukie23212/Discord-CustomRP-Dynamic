@@ -1,4 +1,4 @@
-﻿<?xml version='1.0' encoding='utf-8'?>
+<?xml version='1.0' encoding='utf-8'?>
 <SettingsFile xmlns="http://schemas.microsoft.com/VisualStudio/2004/01/settings" CurrentProfile="(Default)" GeneratedClassNamespace="CustomRPC.Properties" GeneratedClassName="Settings">
   <Profiles />
   <Settings>
@@ -50,7 +50,7 @@
     <Setting Name="largeText" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>
-	<Setting Name="largeURL" Type="System.String" Scope="User">
+    <Setting Name="largeURL" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>
     <Setting Name="smallKey" Type="System.String" Scope="User">
@@ -115,6 +115,21 @@
     </Setting>
     <Setting Name="darkMode" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="dynamicEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="dynamicInterval" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">5</Value>
+    </Setting>
+    <Setting Name="dynamicTestValues" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Hello;World</Value>
+    </Setting>
+    <Setting Name="dynamicMode" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Sequential</Value>
+    </Setting>
+    <Setting Name="dynamicStatuses" Type="System.String" Scope="User">
+      <Value Profile="(Default)" />
     </Setting>
   </Settings>
 </SettingsFile>
